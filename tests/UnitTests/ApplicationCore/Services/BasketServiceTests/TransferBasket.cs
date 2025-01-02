@@ -5,6 +5,7 @@ using Microsoft.eShopWeb.ApplicationCore.Interfaces;
 using Microsoft.eShopWeb.ApplicationCore.Services;
 using Microsoft.eShopWeb.ApplicationCore.Specifications;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 using Xunit;
 
 namespace Microsoft.eShopWeb.UnitTests.ApplicationCore.Services.BasketServiceTests;
@@ -100,5 +101,119 @@ public class TransferBasket
         var basketService = new BasketService(_mockBasketRepo, _mockLogger);
         await basketService.TransferBasketAsync(_existentAnonymousBasketBuyerId, _nonexistentUserBasketBuyerId);
         await _mockBasketRepo.Received().AddAsync(Arg.Is<Basket>(x => x.BuyerId == _nonexistentUserBasketBuyerId), default);
+    }
+
+    [Theory]
+    [InlineData(null)] // parameter is not nullable
+    [InlineData("")]
+    public async Task DoesNothingIfAnonymousBuyerIdIsNullOrEmpty(string anonymousId)
+    {
+        var basketService = new BasketService(_mockBasketRepo, _mockLogger);
+
+        await basketService.TransferBasketAsync(anonymousId, _existentUserBasketBuyerId);
+
+        await _mockBasketRepo.DidNotReceive().FirstOrDefaultAsync(Arg.Any<BasketWithItemsSpecification>(), default);
+    }
+
+    [Theory]
+    [InlineData(null)]  // parameter is not nullable
+    [InlineData("")]
+    public async Task DoesNothingIfUserNameIsNullOrEmpty(string userName)
+    {
+        var basketService = new BasketService(_mockBasketRepo, _mockLogger);
+
+        await basketService.TransferBasketAsync(_existentAnonymousBasketBuyerId, userName);
+
+        await _mockBasketRepo.DidNotReceive().FirstOrDefaultAsync(Arg.Any<BasketWithItemsSpecification>(), default);
+    }
+
+    [Fact]
+    public async Task DoesNotModifyUserBasketIfAnonymousBasketIsEmpty()
+    {
+        var anonymousBasket = new Basket(_existentAnonymousBasketBuyerId);
+        var userBasket = new Basket(_existentUserBasketBuyerId);
+
+        var results = new Results<Basket>(anonymousBasket)
+                        .Then(userBasket);
+
+        _mockBasketRepo.FirstOrDefaultAsync(Arg.Any<BasketWithItemsSpecification>(), default).Returns(x => results.Next());
+        var basketService = new BasketService(_mockBasketRepo, _mockLogger);
+
+        await basketService.TransferBasketAsync(_existentAnonymousBasketBuyerId, _existentUserBasketBuyerId);
+
+        Assert.Empty(userBasket.Items);
+    }
+
+    [Fact]
+    public async Task LogsTransferSuccess()
+    {
+        var anonymousBasket = new Basket(_existentAnonymousBasketBuyerId);
+        anonymousBasket.AddItem(1, 10, 1);
+        var userBasket = new Basket(_existentUserBasketBuyerId);
+
+        var results = new Results<Basket>(anonymousBasket)
+                        .Then(userBasket);
+
+        _mockBasketRepo.FirstOrDefaultAsync(Arg.Any<BasketWithItemsSpecification>(), default).Returns(x => results.Next());
+        var basketService = new BasketService(_mockBasketRepo, _mockLogger);
+
+        await basketService.TransferBasketAsync(_existentAnonymousBasketBuyerId, _existentUserBasketBuyerId);
+
+        _mockLogger.Received().LogInformation(Arg.Is<string>(s => s.Contains("Transferring basket from")));
+    }
+
+    [Fact]
+    public async Task TransfersLargeAnonymousBasket()
+    {
+        var anonymousBasket = new Basket(_existentAnonymousBasketBuyerId);
+        for (int i = 0; i < 100; i++)
+        {
+            anonymousBasket.AddItem(i, 10, 1);
+        }
+
+        var userBasket = new Basket(_existentUserBasketBuyerId);
+
+        var results = new Results<Basket>(anonymousBasket)
+                        .Then(userBasket);
+
+        _mockBasketRepo.FirstOrDefaultAsync(Arg.Any<BasketWithItemsSpecification>(), default).Returns(x => results.Next());
+        var basketService = new BasketService(_mockBasketRepo, _mockLogger);
+
+        await basketService.TransferBasketAsync(_existentAnonymousBasketBuyerId, _existentUserBasketBuyerId);
+
+        Assert.Equal(100, userBasket.Items.Count);
+    }
+
+    [Fact]
+    public async Task AggregatesQuantitiesForIdenticalItems()
+    {
+        var anonymousBasket = new Basket(_existentAnonymousBasketBuyerId);
+        anonymousBasket.AddItem(1, 10, 2);
+        var userBasket = new Basket(_existentUserBasketBuyerId);
+        userBasket.AddItem(1, 10, 3);
+
+        var results = new Results<Basket>(anonymousBasket)
+                        .Then(userBasket);
+
+        _mockBasketRepo.FirstOrDefaultAsync(Arg.Any<BasketWithItemsSpecification>(), default).Returns(x => results.Next());
+        var basketService = new BasketService(_mockBasketRepo, _mockLogger);
+
+        await basketService.TransferBasketAsync(_existentAnonymousBasketBuyerId, _existentUserBasketBuyerId);
+
+        Assert.Single(userBasket.Items);
+        Assert.Equal(5, userBasket.Items[0].Quantity); // C# syntax error
+    }
+
+    [Fact]
+    public async Task HandlesRepositoryException()
+    {
+        _mockBasketRepo.FirstOrDefaultAsync(Arg.Any<BasketWithItemsSpecification>(), default)
+            .Throws(new Exception("Repository error"));
+
+        var basketService = new BasketService(_mockBasketRepo, _mockLogger);
+
+        await basketService.TransferBasketAsync(_existentAnonymousBasketBuyerId, _existentUserBasketBuyerId);
+
+        _mockLogger.Received().LogError(Arg.Is<string>(s => s.Contains("Error transferring basket"))); // No LogError method
     }
 }
