@@ -103,6 +103,7 @@ public class TransferBasket
         await _mockBasketRepo.Received().AddAsync(Arg.Is<Basket>(x => x.BuyerId == _nonexistentUserBasketBuyerId), default);
     }
 
+    // *************** GPT-4o suggested tests *****************************
     [Theory]
     [InlineData(null)] // parameter is not nullable
     [InlineData("")]
@@ -216,4 +217,79 @@ public class TransferBasket
 
         _mockLogger.Received().LogError(Arg.Is<string>(s => s.Contains("Error transferring basket"))); // No LogError method
     }
+
+    // *********************************************************************
+
+    // ********************** Claude suggested tests ***********************
+    [Fact]
+    public async Task TransfersEmptyAnonymousBasketToUserBasket()
+    {
+        var anonymousBasket = new Basket(_existentAnonymousBasketBuyerId);
+        var userBasket = new Basket(_existentUserBasketBuyerId);
+        userBasket.AddItem(1, 10, 1);
+
+        var results = new Results<Basket>(anonymousBasket)
+                        .Then(userBasket);
+
+        _mockBasketRepo.FirstOrDefaultAsync(Arg.Any<BasketWithItemsSpecification>(), default).Returns(x => results.Next());
+        var basketService = new BasketService(_mockBasketRepo, _mockLogger);
+
+        await basketService.TransferBasketAsync(_existentAnonymousBasketBuyerId, _existentUserBasketBuyerId);
+
+        Assert.Single(userBasket.Items);
+        await _mockBasketRepo.Received().DeleteAsync(anonymousBasket, default);
+    }
+
+    [Fact]
+    public async Task UsesCorrectSpecificationForAnonymousBasket()
+    {
+        var anonymousBasket = new Basket(_existentAnonymousBasketBuyerId);
+        var userBasket = new Basket(_existentUserBasketBuyerId);
+
+        var results = new Results<Basket>(anonymousBasket)
+                        .Then(userBasket);
+
+        _mockBasketRepo.FirstOrDefaultAsync(Arg.Any<BasketWithItemsSpecification>(), default).Returns(x => results.Next());
+        var basketService = new BasketService(_mockBasketRepo, _mockLogger);
+
+        await basketService.TransferBasketAsync(_existentAnonymousBasketBuyerId, _existentUserBasketBuyerId);
+
+        await _mockBasketRepo.Received().FirstOrDefaultAsync(
+            Arg.Is<BasketWithItemsSpecification>(spec =>
+                spec.Criteria.ToString().Contains($"b.BuyerId == \"{_existentAnonymousBasketBuyerId}\"")), // Criteria doesn't exist
+            default);
+    }
+
+    [Fact]
+    public async Task UsesCorrectSpecificationForUserBasket()
+    {
+        var anonymousBasket = new Basket(_existentAnonymousBasketBuyerId);
+        var userBasket = new Basket(_existentUserBasketBuyerId);
+
+        var results = new Results<Basket>(anonymousBasket)
+                        .Then(userBasket);
+
+        bool firstCall = true;
+        _mockBasketRepo.FirstOrDefaultAsync(Arg.Any<BasketWithItemsSpecification>(), default)
+            .Returns(x =>
+            {
+                if (firstCall)
+                {
+                    firstCall = false;
+                    return anonymousBasket;
+                }
+                return userBasket;
+            });
+
+        var basketService = new BasketService(_mockBasketRepo, _mockLogger);
+
+        await basketService.TransferBasketAsync(_existentAnonymousBasketBuyerId, _existentUserBasketBuyerId);
+
+        await _mockBasketRepo.Received().FirstOrDefaultAsync(
+            Arg.Is<BasketWithItemsSpecification>(spec =>
+                spec.Criteria.ToString().Contains($"b.BuyerId == \"{_existentUserBasketBuyerId}\"")), // Criteria doesn't exist
+            default);
+    }
+
+    // **********************************************************************
 }
